@@ -1,83 +1,119 @@
-from datetime import datetime
-from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import JSONResponse
-from fastapi.encoders import jsonable_encoder
+from pydantic import BaseModel
 from fastapi_jwt_auth import AuthJWT
 from db.database import notification_db
+from datetime import datetime
+import uuid
 
 router = APIRouter(
     prefix="/notification",
     tags=["notification"],
-    responses={404: {"description": "Not found"}},
 )
 
-notification_db = notification_db()
-
-
-class notification(BaseModel):
-    id: str
+class NotificationData(BaseModel):
     device_id: str
-    Package: str
-    titleText: str = "null"
-    notificationBodyText: str = "null"
-    date: datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
+    package_name: str
+    title: str
+    body: str
 
 @router.post("/add")
-async def add_notification(notification: notification):
-    response = jsonable_encoder(notification)
-    del response["id"]
-    del response["date"]
-    data = notification_db.fetch(response).items
-    if len(data) > 0:
-        return JSONResponse({"success": False, "message": "notification already exists"})
-    notification_db.put(jsonable_encoder(notification))
-    return JSONResponse({"success": True, "message": "notification added successfully"})
-
-
-@router.get("/device/{device_name}")
-async def get_notification(device_name: str, Authorize: AuthJWT = Depends()):
-    Authorize.jwt_required()
-    response = []
-    data = notification_db.fetch({"device_id": device_name}).items
-    for i in data:
-        del i["key"]
-        del i["id"]
-        response.append(list(i.values()))
-    return JSONResponse(
-        {
-            "success": True,
-            "notification": response,
+async def add_notification(notification: NotificationData):
+    """Add notification from device"""
+    try:
+        db = notification_db()
+        
+        # Check if notification already exists (avoid duplicates)
+        existing = db.select("*").eq("device_id", notification.device_id).eq("package_name", notification.package_name).eq("title", notification.title).execute()
+        
+        if existing.data and len(existing.data) > 0:
+            return JSONResponse({
+                "success": False,
+                "message": "Notification already exists"
+            })
+        
+        data = {
+            "id": str(uuid.uuid4()),
+            "device_id": notification.device_id,
+            "package_name": notification.package_name,
+            "title": notification.title,
+            "body": notification.body,
+            "read": False,
+            "created_at": datetime.now().isoformat()
         }
-    )
+        
+        response = db.insert(data).execute()
+        
+        return JSONResponse({
+            "success": True,
+            "notification_id": response.data[0]["id"],
+            "message": "Notification added successfully"
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
+@router.get("/device/{device_id}")
+async def get_notifications(device_id: str, Authorize: AuthJWT = Depends()):
+    """Get notifications for device"""
+    try:
+        Authorize.jwt_required()
+        
+        db = notification_db()
+        response = db.select("*").eq("device_id", device_id).order("created_at", desc=True).execute()
+        
+        return JSONResponse({
+            "success": True,
+            "total": len(response.data),
+            "notifications": response.data
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
 @router.get("/")
-async def get_notifications(Authorize: AuthJWT = Depends()):
-    Authorize.jwt_required()
-    response = []
-    data = notification_db.fetch().items
-    for i in data:
-        del i["key"]
-        del i["id"]
-        response.append(list(i.values()))
-    return JSONResponse(
-        {
+async def get_all_notifications(Authorize: AuthJWT = Depends()):
+    """Get all notifications"""
+    try:
+        Authorize.jwt_required()
+        
+        db = notification_db()
+        response = db.select("*").order("created_at", desc=True).execute()
+        
+        return JSONResponse({
             "success": True,
-            "notification": sorted(
-                response, key=lambda i: datetime.fromisoformat(i[1]), reverse=True
-            ),
-        }
-    )
+            "total": len(response.data),
+            "notifications": response.data
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
+@router.put("/mark-read/{notification_id}")
+async def mark_notification_read(notification_id: str, Authorize: AuthJWT = Depends()):
+    """Mark notification as read"""
+    try:
+        Authorize.jwt_required()
+        
+        db = notification_db()
+        db.update({"read": True}).eq("id", notification_id).execute()
+        
+        return JSONResponse({
+            "success": True,
+            "message": "Notification marked as read"
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
-@router.get("/delete/{id}")
-async def delete_notification(id: str, Authorize: AuthJWT = Depends()):
-    Authorize.jwt_required()
-    data = notification_db.fetch({"device_id": id}).items
-    for i in data:
-        notification_db.delete(i["key"])
-    return JSONResponse(
-        {"success": True, "message": "notification deleted successfully"}
-    )
+@router.delete("/device/{device_id}")
+async def delete_device_notifications(device_id: str, Authorize: AuthJWT = Depends()):
+    """Delete all notifications for device"""
+    try:
+        Authorize.jwt_required()
+        
+        db = notification_db()
+        db.delete().eq("device_id", device_id).execute()
+        
+        return JSONResponse({
+            "success": True,
+            "message": "Notifications deleted successfully"
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")

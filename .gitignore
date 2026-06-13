@@ -1,2 +1,13 @@
-.space
+.env
+__pycache__/
+*.pyc
 .DS_Store
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+node_modules/
+.idea/
+.vscode/
+*.log

