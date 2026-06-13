@@ -18,8 +18,8 @@ app = FastAPI(
     title="Zeefer-Droid API",
     description="Advanced Android Control Panel API",
     version="1.0.0",
-    docs_url=None,  # Disable auto docs
-    redoc_url=None,  # Disable redoc
+    docs_url=None,
+    redoc_url=None,
 )
 
 # Add CORS middleware
