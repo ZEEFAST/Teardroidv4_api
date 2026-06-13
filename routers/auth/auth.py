@@ -22,9 +22,12 @@ class Settings(BaseModel):
     authjwt_secret_key: str = "zeefer-droid-super-secret-key"
     authjwt_access_token_expires: int = 3600
 
-@AuthJWT.load_config
-def get_config():
-    return Settings()
+def check_auth():
+    data = auth_db.fetch().items
+    if len(data) == 0:
+        auth_db.put({"username": "flash", "password": "admin"})
+    else:
+        pass
 
 def check_auth():
     """Initialize default admin account if not exists"""
