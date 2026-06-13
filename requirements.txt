@@ -1,6 +1,7 @@
 fastapi==0.79.0
-deta
 python-multipart
 fastapi-jwt-auth
 uvicorn
 requests
+supabase==2.4.0
+python-dotenv
